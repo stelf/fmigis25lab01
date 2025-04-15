@@ -1,5 +1,10 @@
 # lab01/import_bulgaria_buildings.py
 
+import sys
+if not (sys.version_info.major == 3 and sys.version_info.minor == 11):
+    print("This script requires Python 3.11.x. Exiting.")
+    sys.exit(1)
+
 import os
 import json
 import psycopg2
@@ -7,189 +12,179 @@ import gzip
 import glob
 import time
 from dotenv import load_dotenv
-from shapely.geometry import shape, box
+from shapely.geometry.base import BaseGeometry
+from shapely.geometry import shape
 from shapely.errors import ShapelyError
-from shapely import wkb
+from shapely import wkt
 
+# --- Load environment variables for DB connection ---
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
 load_dotenv(dotenv_path=dotenv_path)
-# Environment variables loaded: PGDATABASE, PGUSER, PGPASSWORD, PGHOST, PGPORT (optional, defaults to 5432)
-# These variables are used directly in the code below.
 
 input_dir_path = os.path.join(os.path.dirname(__file__), 'IN')
 source_boundary_table = "adm_rayoni"
-target_table = "validated_bulgaria_buildings"
+target_table = "bulgaria_buildings"
 
-def process_and_insert_data(data_iterator, conn, boundary_geom_wkb, boundary_box_shapely):
-    """Processes GeoJSONL data, performs Shapely bbox check, calls PL/pgSQL function, returns count."""
-    cursor = None
-    processed_count = 0
-    inserted_count_in_run = 0
-    skipped_bbox_count = 0
-    commit_batch_size = 1000
+# --- Find all .gz files in the input directory ---
+pattern = os.path.join(input_dir_path, '*.gz')
+gz_file_paths = glob.glob(pattern)
+if not gz_file_paths:
+    print(f"No .gz files found in {input_dir_path}. Exiting.")
+    exit()
+print(f"Found {len(gz_file_paths)} .gz files in {input_dir_path}.")
 
+# --- Connect to the database ---
+def connect_db() -> psycopg2.extensions.connection:
+    return psycopg2.connect(
+        dbname=os.getenv("PGDATABASE"),
+        user=os.getenv("PGUSER"),   password=os.getenv("PGPASSWORD"),
+        host=os.getenv("PGHOST"),   port    =os.getenv("PGPORT", "5432")
+    )
+
+# --- Calculate boundary geometry ---
+def calculate_boundary(conn: psycopg2.extensions.connection, 
+                       source_boundary_table: str) -> BaseGeometry | None:
     try:
         cursor = conn.cursor()
-        call_sql = f"SELECT process_geojson_line(%s, ST_GeomFromEWKB(%s));"
-        print("Starting data processing with Shapely bounding box pre-check...")
+        boundary_sql = (
+            f"""
+            SELECT ST_AsEWKT(
+                st_simplify(
+                    ST_Union(ST_Buffer(geom, 0.1)),
+                    100
+                )
+            )
+            FROM {source_boundary_table};
+            """
+        )
+        cursor.execute(boundary_sql)
+        result = cursor.fetchone()
+        cursor.close()
+        if result and result[0]:
+            return wkt.loads(result[0])
+        print(f"ERROR: Could not calculate boundary geometry from '{source_boundary_table}'.")
+        return None
+    except Exception as e:
+        print(f"ERROR in calculate_boundary: {e}")
+        return None
 
+# --- Main spatial import logic ---
+#    For each GeoJSONL feature:
+#    - Decodes and parses the line
+#    - Converts to Shapely geometry
+#    - Checks intersection with the boundary (using Shapely)
+#    - Inserts into DB if not a duplicate (using ST_Equals in SQL)
+#
+def process_and_insert_data(
+                            data_iterator,
+                            conn: psycopg2.extensions.connection,
+                            boundary_geom: BaseGeometry ) -> int:
+    cursor: psycopg2.extensions.cursor | None = None
+    processed_count = inserted_count = skipped_count = 0
+    commit_batch_size = 1000
+    try:
+        cursor = conn.cursor()
+        print("Starting spatial import with intersection and deduplication checks...")
         for line_bytes in data_iterator:
             processed_count += 1
             if not line_bytes:
                 continue
-
             try:
                 line = line_bytes.decode('utf-8').strip()
                 if not line:
                     continue
-
                 feature = json.loads(line)
                 geometry = feature.get('geometry')
-
-                # Basic check for Polygon geometry
                 if geometry and geometry.get('type') == 'Polygon':
                     try:
-                        input_shape = shape(geometry)
-                        feature_box = box(*input_shape.bounds)
-
-                        # BBOX Intersection Check using Shapely
-                        if feature_box.intersects(boundary_box_shapely):
-                            geom_json = json.dumps(geometry)
-                            cursor.execute(call_sql, (geom_json, boundary_geom_wkb))
-                            result = cursor.fetchone()
-                            status = result[0] if result else 0  # Default to 0 if no result
-
-                            if status == 1:
-                                inserted_count_in_run += 1
-                        else:       # Skip DB call if bounding boxes don't intersect                            
-                            skipped_bbox_count += 1
-
+                        feature_geom = shape(geometry)
+                        # --- Shapely intersection: fast bbox check, then geometry check ---
+                        if feature_geom.intersects(boundary_geom):
+                            geom_wkt = feature_geom.wkt
+                            # --- Insert only if not already present ---
+                            cursor.execute(
+                                """
+                                INSERT INTO bulgaria_buildings (geom)
+                                SELECT ST_GeomFromText(%s, 7801)
+                                WHERE NOT EXISTS (
+                                    SELECT 1
+                                    FROM bulgaria_buildings
+                                    WHERE ST_Equals(geom, ST_GeomFromText(%s, 7801))
+                                );
+                                """, (geom_wkt, geom_wkt)
+                            )
+                            if cursor.rowcount:
+                                inserted_count += 1
+                        else:
+                            skipped_count += 1
                     except (ShapelyError, ValueError, TypeError) as shape_err:
                         print(f"Skipping line due to Shapely error: {shape_err} - Line: {line[:100]}...")
-                        continue  # Skip to next line
-
-                    # Commit periodically
-                    db_calls_made = processed_count - skipped_bbox_count
-                    if db_calls_made > 0 and db_calls_made % commit_batch_size == 0:
+                        continue
+                    # --- Commit in batches for performance ---
+                    db_calls = processed_count - skipped_count
+                    if db_calls > 0 and db_calls % commit_batch_size == 0:
                         conn.commit()
-                        print(f"Processed {processed_count} lines ({skipped_bbox_count} skipped by bbox), committed transaction. Inserted so far: {inserted_count_in_run}")
-
-            except json.JSONDecodeError as e:
-                print(f"Skipping invalid JSON line: {line[:100]}... Error: {e}")
-            except UnicodeDecodeError as e:
-                print(f"Skipping line due to decoding error: {e}")
-
-        # Final commit
+                        print(f"Processed {processed_count} lines ({skipped_count} skipped), committed. Inserted so far: {inserted_count}")
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                print(f"Skipping line: {line[:100]}... Error: {e}")
         conn.commit()
-        print(f"Data processing for this batch completed. Total lines processed: {processed_count}. Skipped by BBOX check: {skipped_bbox_count}. Features inserted by function: {inserted_count_in_run}")
-        return inserted_count_in_run
-
+        print(f"Batch done. Processed: {processed_count}, Skipped: {skipped_count}, Inserted: {inserted_count}")
+        return inserted_count
     except psycopg2.Error as e:
-        print(f"Database error during processing: {e}")
-        if conn:
-            conn.rollback()
+        print(f"Database error: {e}")
+        if conn: conn.rollback()
         return 0
     except Exception as e:
-        print(f"An unexpected error occurred during data processing: {e}")
-        if conn:
-            conn.rollback()
+        print(f"Unexpected error: {e}")
+        if conn: conn.rollback()
         return 0
     finally:
-        if cursor:
-            cursor.close()
+        if cursor: cursor.close()
 
-def find_gz_files(directory_path):
-    """Finds all .gz files in the specified directory."""
-    search_pattern = os.path.join(directory_path, '*.gz')
-    gz_files = glob.glob(search_pattern)
-    print(f"Found {len(gz_files)} .gz files in {directory_path}.")
-    return gz_files
-
-def main():
-    gz_file_paths = find_gz_files(input_dir_path)
-    if not gz_file_paths:
-        print(f"No .gz files found in {input_dir_path}. Exiting.")
-        return
-
-    conn = None
-    total_features_inserted = 0
-    boundary_geom_wkb = None
-    boundary_box_shapely = None
-    total_start_time = time.time()
-
+# --- Main entry point ---
+def main() -> None:
+    conn: psycopg2.extensions.connection | None = None
+    total_inserted = 0
+    boundary_geom = None
+    total_start = time.time()
+    
     try:
-        # Use os.getenv directly in the connection string
-        print(f"Connecting to database: dbname='{os.getenv('PGDATABASE')}' host='{os.getenv('PGHOST')}'")
-        conn = psycopg2.connect(
-            dbname=os.getenv("PGDATABASE"),
-            user=os.getenv("PGUSER"),
-            password=os.getenv("PGPASSWORD"),
-            host=os.getenv("PGHOST"),
-            port=os.getenv("PGPORT", "5432")  # Default port if not set
-        )
+        # --- get connection
+        conn = connect_db()
         print("Database connection successful.")
         conn.autocommit = False
 
-        print(f"Calculating boundary geometry from '{source_boundary_table}'...")
-        boundary_start_time = time.time()
-        cursor = conn.cursor()
-
-        # Calculate simplified union WKB
-        boundary_sql = f"SELECT ST_AsEWKB(st_simplify(ST_Union(ST_Buffer(geom, 0.1)), 100)) FROM {source_boundary_table};"
-        cursor.execute(boundary_sql)
-        result = cursor.fetchone()
-        if result and result[0]:
-            boundary_geom_wkb = result[0]
-            boundary_end_time = time.time()
-            print(f"Boundary geometry WKB calculated successfully in {boundary_end_time - boundary_start_time:.2f} seconds.")
-
-            # Calculate the bounding box using Shapely
-            print("Calculating boundary bounding box using Shapely...")
-            boundary_geom_shapely = wkb.loads(boundary_geom_wkb)
-            boundary_box_shapely = box(*boundary_geom_shapely.bounds)
-            print(f"Boundary bounding box calculated: {boundary_box_shapely.bounds}")
-
-        else:
-            print(f"ERROR: Could not calculate boundary geometry WKB from '{source_boundary_table}'. Ensure it exists and contains valid geometries.")
-            cursor.close()
-            if conn:
-                conn.close()
+        # --- Calculate boundary geometry as a separate step ---
+        boundary_geom = calculate_boundary(conn, source_boundary_table)
+        if not boundary_geom:
+            if conn: conn.close()
             return
 
-        cursor.close()
-
+        # --- Process each .gz file ---
         for i, file_path in enumerate(gz_file_paths):
             file_name = os.path.basename(file_path)
             print(f"\n--- Processing file {i+1}/{len(gz_file_paths)}: {file_name} ---")
-            file_start_time = time.time()
-
+            t1 = time.time()
             try:
                 with gzip.open(file_path, 'rb') as f_in:
-                    features_in_run = process_and_insert_data(f_in, conn, boundary_geom_wkb, boundary_box_shapely)
-                    total_features_inserted += features_in_run if features_in_run else 0
-
-                file_end_time = time.time()
-                print(f"--- Finished processing {file_name} in {file_end_time - file_start_time:.2f} seconds. Inserted: {features_in_run or 0} ---")
-
+                    inserted = process_and_insert_data(f_in, conn, boundary_geom)
+                    total_inserted += inserted if inserted else 0
+                print(f"--- Finished {file_name} in {time.time() - t1:.2f} s. Inserted: {inserted or 0} ---")
             except FileNotFoundError:
                 print(f"ERROR: File not found: {file_path}. Skipping.")
                 continue
             except gzip.BadGzipFile:
                 print(f"ERROR: Bad Gzip file: {file_path}. Skipping.")
-                if conn:
-                    conn.rollback()
+                if conn: conn.rollback()
                 continue
-
-        total_end_time = time.time()
-        print(f"\n--- Import finished. Total features inserted: {total_features_inserted} ---")
-        print(f"--- Total execution time: {total_end_time - total_start_time:.2f} seconds ---")
-
+            
+        print(f"\n--- Import finished. Total features inserted: {total_inserted} ---")
+        print(f"--- Total execution time: {time.time() - total_start:.2f} s ---")
     except psycopg2.OperationalError as e:
         print(f"ERROR: Could not establish initial database connection: {e}")
     except Exception as e:
         print(f"ERROR: An unexpected error occurred: {e}")
-        if conn:
-            conn.rollback()
+        if conn: conn.rollback()
     finally:
         if conn:
             conn.close()

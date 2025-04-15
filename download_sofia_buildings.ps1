@@ -3,6 +3,13 @@
 # Чете dataset-links.csv, филтрира само за Bulgaria, обновява input.txt и тегли .gz файловете в IN/
 # Работи на Windows и macOS (pwsh)
 
+# Проверка за PowerShell 7+
+$psver = $PSVersionTable.PSVersion.Major
+if ($psver -lt 7) {
+    Write-Host "This script requires PowerShell 7 or later. Exiting."
+    exit 1
+}
+
 $datasetUrl = "https://minedbuildings.z5.web.core.windows.net/global-buildings/dataset-links.csv"
 $inputFile = "input.txt"
 $outDir = "IN"

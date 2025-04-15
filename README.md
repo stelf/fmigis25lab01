@@ -23,12 +23,12 @@ https://minedbuildings.z5.web.core.windows.net/global-buildings/dataset-links.cs
 Списъкът с файлове за България се поддържа в `input.txt` и се изтеглят автоматично в папка `IN/`.
 
 За автоматично изтегляне и обновяване на списъка с файлове използвайте един от следните скриптове:
-- `download_bulgaria_buildings.py` (платформено-независим, изисква Python и requests)
-- `download_bulgaria_buildings.ps1` (PowerShell, работи на Windows и macOS/pwsh)
+- `download_sofia_buildings.py` (платформено-независим, изисква Python и requests)
+- `download_sofia_buildings.ps1` (PowerShell, работи на Windows и macOS/pwsh)
 
 И двата скрипта:
 - Дърпат dataset-links.csv от официалния URL
-- Отсяват само записите за България
+- Отсяват само записите за София (с пространствено пресичане)
 - Обновяват input.txt
 - Теглят всички файлове в IN/
 - input.txt се обновява само с успешно изтеглените файлове
@@ -36,24 +36,24 @@ https://minedbuildings.z5.web.core.windows.net/global-buildings/dataset-links.cs
 ## Файлове
 - `create_bulgaria_buildings_table.sql` – DDL за създаване на таблицата и индекса.
 - `adm_rayoni_dump.sql` – SQL dump с административните райони.
-- `import_sofia_buildings.py` – Основният скрипт за импорт.
+- `import_sofia_buildings.py` – Основната програма за наливане на данните в базата.
 - `input.txt` – Списък с източници на GeoJSONL файлове.
-- `IN/` – Папка, в която се поставят изтеглените .gz файлове с данни за сгради.
+- `IN/` – Папка, в която се поставят изтеглените .gz файлове с геометрични данни за сгради.
 - `download_bulgaria_buildings.py` – Python скрипт за автоматично изтегляне на данните.
 - `download_bulgaria_buildings.ps1` – PowerShell скрипт за автоматично изтегляне на данните.
 
 ## Изисквания
-- PostgreSQL с PostGIS
-- Python 3.x с библиотеки: psycopg2, gzip, shapely, python-dotenv, requests
+- PostgreSQL с PostGIS (и настроен за връзка към него .env файл)
+- Python 3.11+ с библиотеки: psycopg2, gzip, shapely, python-dotenv, requests
 - (по избор) PowerShell (Windows/macOS) за .ps1 скрипта
 
 ## Изпълнение
 1. Създайте таблицата с `create_bulgaria_buildings_table.sql`.
 2. Възстановете архива на административните райони с помощта на `adm_rayoni_dump.sql`.
 3. Използвайте един от скриптовете за изтегляне, за да попълните IN/ с .gz файловете.
-4. Настройте .env файл с достъп до базата данни.
+4. Настройте .env файл с достъп до базата данни. В случая го търси в горната спрямо проекта папка.
 5. Стартирайте `import_sofia_buildings.py`.
 
 ## Резултат
 
-В базата данни ще има таблица с всички сгради, които попадат в административните граници на София, подходяща за пространствени анализи и визуализация.
+В базата данни следва да се появи има таблица с всички сгради, които попадат в административните граници на София, подходяща за пространствени анализи и визуализация.

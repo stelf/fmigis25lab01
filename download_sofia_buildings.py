@@ -4,6 +4,11 @@
 Чете input.txt, тегли .gz файловете в IN/ и обновява input.txt само с успешните изтегляния.
 Работи на всички платформи (Windows, macOS, Linux).
 """
+import sys
+if not (sys.version_info.major == 3 and sys.version_info.minor == 11):
+    print("This script requires Python 3.11.x. Exiting.")
+    sys.exit(1)
+
 import os
 import requests
 import csv
