@@ -54,7 +54,6 @@ def process_and_insert_data(data_iterator, conn, boundary_geom_wkb, boundary_box
 
                         # BBOX Intersection Check using Shapely
                         if feature_box.intersects(boundary_box_shapely):
-                            # If bboxes intersect, proceed with the DB check
                             geom_json = json.dumps(geometry)
                             cursor.execute(call_sql, (geom_json, boundary_geom_wkb))
                             result = cursor.fetchone()
@@ -62,8 +61,7 @@ def process_and_insert_data(data_iterator, conn, boundary_geom_wkb, boundary_box
 
                             if status == 1:
                                 inserted_count_in_run += 1
-                        else:
-                            # Skip DB call if bounding boxes don't intersect
+                        else:       # Skip DB call if bounding boxes don't intersect                            
                             skipped_bbox_count += 1
 
                     except (ShapelyError, ValueError, TypeError) as shape_err:
@@ -73,9 +71,8 @@ def process_and_insert_data(data_iterator, conn, boundary_geom_wkb, boundary_box
                     # Commit periodically
                     db_calls_made = processed_count - skipped_bbox_count
                     if db_calls_made > 0 and db_calls_made % commit_batch_size == 0:
-                        if cursor.connection.get_transaction_status() == psycopg2.extensions.TRANSACTION_STATUS_INTRANS:
-                            conn.commit()
-                            print(f"Processed {processed_count} lines ({skipped_bbox_count} skipped by bbox), committed transaction. Inserted so far: {inserted_count_in_run}")
+                        conn.commit()
+                        print(f"Processed {processed_count} lines ({skipped_bbox_count} skipped by bbox), committed transaction. Inserted so far: {inserted_count_in_run}")
 
             except json.JSONDecodeError as e:
                 print(f"Skipping invalid JSON line: {line[:100]}... Error: {e}")
@@ -83,8 +80,7 @@ def process_and_insert_data(data_iterator, conn, boundary_geom_wkb, boundary_box
                 print(f"Skipping line due to decoding error: {e}")
 
         # Final commit
-        if cursor.connection.get_transaction_status() == psycopg2.extensions.TRANSACTION_STATUS_INTRANS:
-            conn.commit()
+        conn.commit()
         print(f"Data processing for this batch completed. Total lines processed: {processed_count}. Skipped by BBOX check: {skipped_bbox_count}. Features inserted by function: {inserted_count_in_run}")
         return inserted_count_in_run
 
@@ -180,7 +176,7 @@ def main():
                 continue
             except gzip.BadGzipFile:
                 print(f"ERROR: Bad Gzip file: {file_path}. Skipping.")
-                if conn and conn.get_transaction_status() == psycopg2.extensions.TRANSACTION_STATUS_INTRANS:
+                if conn:
                     conn.rollback()
                 continue
 
@@ -192,7 +188,7 @@ def main():
         print(f"ERROR: Could not establish initial database connection: {e}")
     except Exception as e:
         print(f"ERROR: An unexpected error occurred: {e}")
-        if conn and conn.get_transaction_status() == psycopg2.extensions.TRANSACTION_STATUS_INTRANS:
+        if conn:
             conn.rollback()
     finally:
         if conn:
