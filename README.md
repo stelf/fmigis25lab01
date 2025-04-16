@@ -33,6 +33,27 @@ https://minedbuildings.z5.web.core.windows.net/global-buildings/dataset-links.cs
 - Теглят всички файлове в IN/
 - input.txt се обновява само с успешно изтеглените файлове
 
+## Съпоставка на пространствени операции: PostGIS (ST_) и Shapely
+
+Тъй като ии Shapely и PostGIS стъпват на 
+
+| PostGIS (ST_) функция      | Shapely функция/метод      | Описание                                  |
+|---------------------------|----------------------------|--------------------------------------------|
+| ST_Intersects(a, b)       | a.intersects(b)            | Проверява дали два обекта се пресичат      |
+| ST_Within(a, b)           | a.within(b)                | Проверява дали a е изцяло в b              |
+| ST_Contains(a, b)         | a.contains(b)              | Проверява дали a съдържа b                 |
+| ST_Equals(a, b)           | a.equals(b)                | Проверява дали геометриите са идентични    |
+| ST_Touches(a, b)          | a.touches(b)               | Проверява дали обектите се докосват        |
+| ST_Disjoint(a, b)         | a.disjoint(b)              | Проверява дали са напълно отделни (без общи точки) |
+| ST_Overlaps(a, b)         | a.overlaps(b)              | Проверява дали (поне частично) се припокриват   |
+| ST_Distance(a, b)         | a.distance(b)              | Евклидово разстояние между геометрични обектии                 |
+| ST_Buffer(a, r)           | a.buffer(r)                | Буфериране (разширяване/ограждане) на обект       |
+| ST_Area(a)                | a.area                     | Пресмятане площ на обекта                                    |
+| ST_Length(a)              | a.length                   | Пресмятане дължина на линия/полигон                          |
+| ST_Centroid(a)            | a.centroid                 | Изчислява центроид на обекта                      |
+
+> Забележка: В Shapely всички операции са методи на обектите (например: poly1.intersects(poly2)), докато в PostGIS са функции с префикс ST_.
+
 ## Файлове
 - `create_bulgaria_buildings_table.sql` – DDL за създаване на таблицата и индекса.
 - `adm_rayoni_dump.sql` – SQL dump с административните райони.

@@ -48,7 +48,7 @@ def calculate_boundary(conn: psycopg2.extensions.connection,
         cursor = conn.cursor()
         boundary_sql = (
             f"""
-            SELECT ST_AsEWKT(
+            SELECT ST_AsText(
                 st_simplify(
                     ST_Union(ST_Buffer(geom, 0.1)),
                     100
@@ -61,7 +61,9 @@ def calculate_boundary(conn: psycopg2.extensions.connection,
         result = cursor.fetchone()
         cursor.close()
         if result and result[0]:
-            return wkt.loads(result[0])
+            geom = wkt.loads(result[0])
+            geom.srid = 7801 # Set SRID due to WKT not having it, and EWKT not supported
+            return geom
         print(f"ERROR: Could not calculate boundary geometry from '{source_boundary_table}'.")
         return None
     except Exception as e:
