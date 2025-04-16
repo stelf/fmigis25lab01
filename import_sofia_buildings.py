@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from shapely.geometry.base import BaseGeometry
 from shapely.geometry import shape
 from shapely.errors import ShapelyError
-from shapely import wkt
+from shapely import wkt, set_srid
 
 # --- Load environment variables for DB connection ---
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
@@ -42,18 +42,20 @@ def connect_db() -> psycopg2.extensions.connection:
     )
 
 # --- Calculate boundary geometry ---
-def calculate_boundary(conn: psycopg2.extensions.connection, 
-                       source_boundary_table: str) -> BaseGeometry | None:
+def calculate_boundary( conn: psycopg2.extensions.connection, 
+                        source_boundary_table: str  ) -> BaseGeometry | None:
     try:
         cursor = conn.cursor()
         boundary_sql = (
             f"""
             SELECT ST_AsText(
-                st_simplify(
-                    ST_Union(ST_Buffer(geom, 0.1)),
-                    100
-                )
-            )
+                ST_Transform(
+                    ST_Simplify(
+                        ST_Union(
+                            ST_Buffer(geom, 0.1)),
+                            100
+                    ), 
+                    4326 ) )
             FROM {source_boundary_table};
             """
         )
@@ -62,7 +64,7 @@ def calculate_boundary(conn: psycopg2.extensions.connection,
         cursor.close()
         if result and result[0]:
             geom = wkt.loads(result[0])
-            geom.srid = 7801 # Set SRID due to WKT not having it, and EWKT not supported
+            geom = set_srid(geom, 4326)
             return geom
         print(f"ERROR: Could not calculate boundary geometry from '{source_boundary_table}'.")
         return None
@@ -84,6 +86,7 @@ def process_and_insert_data(
     cursor: psycopg2.extensions.cursor | None = None
     processed_count = inserted_count = skipped_count = 0
     commit_batch_size = 1000
+
     try:
         cursor = conn.cursor()
         print("Starting spatial import with intersection and deduplication checks...")
@@ -99,20 +102,25 @@ def process_and_insert_data(
                 geometry = feature.get('geometry')
                 if geometry and geometry.get('type') == 'Polygon':
                     try:
-                        feature_geom = shape(geometry)
+                        feature_geom_4326 = shape(geometry)
                         # --- Shapely intersection: fast bbox check, then geometry check ---
-                        if feature_geom.intersects(boundary_geom):
-                            geom_wkt = feature_geom.wkt
-                            # --- Insert only if not already present ---
+                        if feature_geom_4326.intersects(boundary_geom):
+                            geom_wkt = feature_geom_4326.wkt
+                            # --- Insert only if not already present 
+                            # --- We use ST_Intersects for fast check
+                            # --- Assuming there are no otherwise overlapping geomteries 
                             cursor.execute(
                                 """
                                 INSERT INTO bulgaria_buildings (geom)
-                                SELECT ST_GeomFromText(%s, 7801)
+                                SELECT ST_Transform( ST_GeomFromText(%s, 4326), 7801 )
                                 WHERE NOT EXISTS (
                                     SELECT 1
                                     FROM bulgaria_buildings
-                                    WHERE ST_Equals(geom, ST_GeomFromText(%s, 7801))
-                                );
+                                    WHERE ST_Intersects(
+                                                geom, 
+                                                ST_Transform( 
+                                                    ST_GeomFromText(%s, 4326), 
+                                                    7801 ) ) );
                                 """, (geom_wkt, geom_wkt)
                             )
                             if cursor.rowcount:
@@ -140,10 +148,10 @@ def process_and_insert_data(
         print(f"Unexpected error: {e}")
         if conn: conn.rollback()
         return 0
-    finally:
+    finally:    
         if cursor: cursor.close()
 
-# --- Main entry point ---
+# --- Main entry point --------------------------------------------------------------------
 def main() -> None:
     conn: psycopg2.extensions.connection | None = None
     total_inserted = 0

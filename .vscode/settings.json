@@ -1,0 +1,10 @@
+{
+    "chat.promptFilesLocations": {
+        ".prompt.md": true
+    },
+    "github.copilot.chat.codeGeneration.instructions": [
+        {
+            "text": "Try to produce diffs matching 1-5 lines before/after edits, also try to facilitate more minimal deletes, etc, so that patch sizes are saved over my 3g connection."
+        }
+    ]
+}

@@ -1,7 +1,6 @@
--- DDL for creating the bulgaria_buildings table and its index.
--- Run this script before executing the Python import script.
-
--- Drop table if it exists (optional, uncomment if needed for clean runs)
+-- DDL за създаване на таблицата bulgaria_buildings и нейния индекс.
+-- Изпълнете това преди да изпълните Python програмата, която налива данни
+-- Изтриване на таблицата, ако съществува (по избор, развийте ако е необходимо за чисти изпълнения)
 -- DROP TABLE IF EXISTS bulgaria_buildings;
 
 CREATE TABLE IF NOT EXISTS bulgaria_buildings (
